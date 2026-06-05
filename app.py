@@ -9,6 +9,7 @@ import random
 from API import APPID, SECRETKEY, APIKEY, TAPPID, TSECRETKEY
 
 # 运行 streamlit run E:\python\AI-Simultaneous-Interpretation-Assistant\app.py
+
 # ==================== 配置区域 ====================
 APP_ID = APPID
 API_KEY = APIKEY
