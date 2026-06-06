@@ -1,20 +1,33 @@
-# 🎧 AI同声传译助手(DAY1 跑通逻辑流程)
 
-上传英文音频文件，自动识别并翻译成中文，以字幕形式呈现。支持 WAV、M4A、AMR 格式。
+
+
+# 🎧 AI同声传译助手 (DAY2 实时扬声器捕获)
+
+实时捕获系统扬声器输出的音频，调用百度语音识别API，以悬浮字幕形式显示识别结果，并支持历史记录查看。无需上传文件，即开即用。
 
 ## ✨ 功能特点
 
-- 🎙️ **语音识别**：调用百度语音API，精准识别英文语音
-- 🌐 **文本翻译**：集成百度翻译API，实时转换为中文
-- 📝 **字幕展示**：识别结果和翻译结果分栏对比显示
-- ⚡ **实时反馈**：处理过程实时显示进度和状态
- 
-## 📁 项目结构
-├── app.py # 主程序 \
-├── API.py # API密钥配置（需自行创建）\
-├── requirements.txt # 依赖列表 \
-└── .gitignore # Git忽略文件
+- 🎙️ **实时捕获扬声器**：自动录制系统播放的音频（如会议、视频、音乐），无需麦克风
+- 🔄 **实时语音识别**：调用百度实时语音识别API，逐句返回识别文本
+- 🪟 **悬浮字幕窗口**：置顶半透明窗口，支持拖拽、调整大小，实时显示当前识别内容
+- 📜 **历史记录窗口**：独立窗口保存所有识别句子，支持清空
+- 🔌 **自动重连**：网络断开后自动重连，静音时发送保活包
+- 🎨 **美观界面**：基于 PyQt5 的圆角半透明暗色主题
 
+## 📁 项目结构
+
+```
+AI-Simultaneous-Interpretation-Assistant/ \
+├── app.py                # 程序入口 \
+├── main_window.py        # 主悬浮窗口\
+├── history_window.py     # 历史记录窗口\
+├── voice_recognition.py  # 语音识别与音频采集线程\
+├── audio_utils.py        # 音频能量计算等辅助函数\
+├── config.py             # 全局配置（采样率、静音阈值等）\
+├── API.py                # API密钥配置（需自行创建）\
+├── requirements.txt      # 依赖列表\
+└── .gitignore            # Git忽略文件\
+```
 
 ## 🚀 快速开始
 
@@ -24,49 +37,84 @@
 git clone https://github.com/LLLJD/AI-Simultaneous-Interpretation-Assistant.git
 cd AI-Simultaneous-Interpretation-Assistant
 ```
+
 ### 2. 创建虚拟环境
+
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # Linux/Mac
-# 或
 .venv\Scripts\activate     # Windows
+# 或
+source .venv/bin/activate  # Linux/Mac
 ```
+
 ### 3. 安装依赖
+
 ```bash
 pip install -r requirements.txt
 ```
+
 ### 4. 配置API密钥
-在项目根目录创建 API.py 文件：
+
+在项目根目录创建 `API.py` 文件：
 
 ```python
 # 百度语音识别（从 https://console.bce.baidu.com/ 获取）
 APPID = "你的语音AppID"      # 一串数字
 APIKEY = "你的语音API Key"    # 字母数字混合
-SECRETKEY = "你的语音Secret Key"
-
-# 百度翻译（从 https://fanyi-api.baidu.com/ 获取）
-TSECRETKEY = "你的百度翻译Secret Key"
-TAPPID = "你的百度翻译AppID"
+DEV_PID = 1736               # 1736 为英语模型（根据需求修改）
+URI = "wss://vop.baidu.com/realtime_asr"
 ```
 
 ### 5. 运行应用
+
 ```bash
-streamlit run app.py
+python app.py
 ```
+
 ## 🛠️ 技术栈
 
 | 技术 | 用途 |
 |------|------|
 | Python | 后端开发 |
-| Streamlit | Web界面 |
-| 百度语音API | 语音识别 |
-| 百度翻译API | 文本翻译 |
+| PyQt5 | 桌面图形界面（悬浮窗、历史窗口、系统托盘） |
+| 百度实时语音API | 实时语音识别（WebSocket） |
+| pyaudiowpatch | Windows 扬声器捕获（WASAPI Loopback） |
+| websocket-client | WebSocket 通信 |
+| audioop / struct | 音频格式转换（重采样、声道合并） |
 
-### 📖 使用说明
-打开浏览器访问 http://localhost:8501
+## 📖 使用说明
 
-上传英文音频文件（WAV/M4A/AMR格式）
+1. 运行 `python app.py` 后，桌面会出现一个半透明的悬浮窗口。
+2. 悬浮窗默认置顶显示当前识别的文本。你可以：
+   - 拖拽标题栏移动窗口
+   - 拖拽边缘调整窗口大小
+   - 点击“📜 历史”按钮打开历史记录窗口
+   - 点击“－”最小化到系统托盘
+   - 点击“×”退出程序
+3. 确保系统正在播放音频（如打开一个英文视频或会议），程序会自动捕获扬声器输出并进行实时识别。
+4. 识别结果会实时显示在主窗口中，每个完整句子会保存到 `recognized_text.txt` 文件并追加到历史窗口。
+5. 历史窗口支持清空所有记录。
 
-点击"开始识别"按钮
+## ⚠️ 注意事项
 
-等待处理完成，查看英文原文和中文翻译
+- **仅支持 Windows**：依赖 `pyaudiowpatch` 的 WASAPI Loopback 功能，Linux/macOS 需要替换音频后端。
+- **扬声器音量**：确保系统音量足够大，且没有静音。
+- **网络要求**：需要稳定的互联网连接，用于调用百度实时识别 API。
+- **静音保持**：如果长时间没有音频输出，程序会自动发送静音包以保持连接不断开。
+
+## 🐛 常见问题
+
+**Q: 启动后没有识别结果？**  
+A: 检查系统是否有音频正在播放；查看控制台日志是否有 “扬声器 Loopback 设备” 信息；确认 `API.py` 中的凭证正确且余额充足。
+
+**Q: 历史窗口不显示？**  
+A: 确保 `history_window.py` 存在，且点击“历史”按钮后窗口弹出。如果窗口位置异常，可以手动调整或重置。
+
+**Q: WebSocket 频繁断开？**  
+A: 可能是网络不稳定或长时间静音。代码已包含自动重连和静音保活包，一般可自动恢复。
+
+## 📜 许可证
+
+MIT License
+```
+

@@ -10,7 +10,6 @@ __pycache__/
 
 # API密钥文件
 API.py
-config.py
 secret.py
 keys.py
 

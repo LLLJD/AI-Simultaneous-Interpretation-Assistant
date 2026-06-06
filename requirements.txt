@@ -1,5 +1,3 @@
-streamlit
-baidu-aip
-requests
-pydub
-googletrans==4.0.0-rc1
+PyQt5>=5.15.0
+websocket-client>=1.5.0
+pyaudiowpatch>=0.1.0

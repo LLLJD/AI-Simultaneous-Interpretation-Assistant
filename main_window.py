@@ -1,0 +1,337 @@
+# main_window.py
+import logging
+
+from PyQt5.QtWidgets import (QWidget, QLabel, QVBoxLayout, QHBoxLayout,
+                             QPushButton, QTextEdit, QMenu, QSystemTrayIcon,
+                             QAction)
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QFont, QCursor
+
+from voice_recognition import SpeechRecognitionThread
+from history_window import HistoryWindow
+
+logger = logging.getLogger(__name__)
+
+class FloatingCaption(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+
+        self.setGeometry(300, 300, 600, 200)
+        self.setMinimumSize(300, 120)
+
+        # 调整大小相关
+        self.resize_edge = None
+        self.resize_start_pos = None
+        self.resize_start_geometry = None
+        self.edge_threshold = 8
+
+        # 主容器
+        self.container = QWidget()
+        self.container.setStyleSheet("""
+            QWidget {
+                background-color: rgba(0, 0, 0, 200);
+                border-radius: 15px;
+            }
+        """)
+
+        # 标题栏
+        title_bar = QWidget()
+        title_bar_layout = QHBoxLayout()
+        title_bar_layout.setContentsMargins(10, 5, 10, 5)
+
+        title_label = QLabel("AI同声传译助手")
+        title_label.setStyleSheet("color: white; font-size: 14px; background: transparent;")
+
+        self.history_btn = QPushButton("📜 历史")
+        self.history_btn.setFixedSize(60, 25)
+        self.history_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(100, 100, 255, 100);
+                color: white;
+                border: none;
+                border-radius: 5px;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: rgba(100, 100, 255, 200);
+            }
+        """)
+        self.history_btn.clicked.connect(self.toggle_history_window)
+
+        title_bar_layout.addWidget(title_label)
+        title_bar_layout.addStretch()
+        title_bar_layout.addWidget(self.history_btn)
+
+        self.min_btn = QPushButton("－")
+        self.min_btn.setFixedSize(30, 25)
+        self.min_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 255, 255, 50);
+                color: white;
+                border: none;
+                border-radius: 5px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 100);
+            }
+        """)
+        self.min_btn.clicked.connect(self.showMinimized)
+
+        self.close_btn = QPushButton("×")
+        self.close_btn.setFixedSize(30, 25)
+        self.close_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 80, 80, 150);
+                color: white;
+                border: none;
+                border-radius: 5px;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 0, 0, 200);
+            }
+        """)
+        self.close_btn.clicked.connect(self.quit_app)
+
+        title_bar_layout.addWidget(self.min_btn)
+        title_bar_layout.addWidget(self.close_btn)
+        title_bar.setLayout(title_bar_layout)
+        title_bar.setStyleSheet("background: transparent;")
+
+        # 内容区域
+        self.text_edit = QTextEdit()
+        self.text_edit.setReadOnly(True)
+        self.text_edit.setStyleSheet("""
+            QTextEdit {
+                background-color: transparent;
+                color: white;
+                font-size: 20px;
+                font-weight: bold;
+                border: none;
+                padding: 15px;
+            }
+        """)
+        self.text_edit.setFont(QFont("Microsoft YaHei", 16, QFont.Bold))
+        self.text_edit.setWordWrapMode(True)
+        self.text_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        main_layout.addWidget(title_bar)
+        main_layout.addWidget(self.text_edit)
+        self.container.setLayout(main_layout)
+
+        outer_layout = QVBoxLayout()
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.addWidget(self.container)
+        self.setLayout(outer_layout)
+
+        # 拖拽移动
+        self.dragging = False
+        self.drag_position = None
+        title_bar.mousePressEvent = self.title_mousePressEvent
+        title_bar.mouseMoveEvent = self.title_mouseMoveEvent
+        title_bar.mouseReleaseEvent = self.title_mouseReleaseEvent
+
+        # 系统托盘
+        self.create_tray_icon()
+
+        # 历史窗口
+        self.history_window = HistoryWindow(self)
+
+        # 启动语音识别线程
+        self.recognition_thread = SpeechRecognitionThread()
+        self.recognition_thread.text_updated.connect(self.update_caption)
+        self.recognition_thread.final_text.connect(self.on_final_text)
+        self.recognition_thread.start()
+
+        self.show()
+
+    # ---------- 窗口调整大小 ----------
+    def get_resize_edge(self, pos):
+        x, y = pos.x(), pos.y()
+        w, h = self.width(), self.height()
+        left = x <= self.edge_threshold
+        right = x >= w - self.edge_threshold
+        top = y <= self.edge_threshold
+        bottom = y >= h - self.edge_threshold
+        if left and top:
+            return "top-left"
+        if right and top:
+            return "top-right"
+        if left and bottom:
+            return "bottom-left"
+        if right and bottom:
+            return "bottom-right"
+        if left:
+            return "left"
+        if right:
+            return "right"
+        if top:
+            return "top"
+        if bottom:
+            return "bottom"
+        return None
+
+    def set_cursor_shape(self, edge):
+        if edge in ("top-left", "bottom-right"):
+            self.setCursor(Qt.SizeFDiagCursor)
+        elif edge in ("top-right", "bottom-left"):
+            self.setCursor(Qt.SizeBDiagCursor)
+        elif edge in ("left", "right"):
+            self.setCursor(Qt.SizeHorCursor)
+        elif edge in ("top", "bottom"):
+            self.setCursor(Qt.SizeVerCursor)
+        else:
+            self.setCursor(Qt.ArrowCursor)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            edge = self.get_resize_edge(event.pos())
+            if edge:
+                self.resize_edge = edge
+                self.resize_start_pos = event.globalPos()
+                self.resize_start_geometry = self.geometry()
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.resize_edge and event.buttons() == Qt.LeftButton:
+            self.perform_resize(event.globalPos())
+            event.accept()
+            return
+        if not self.resize_edge:
+            edge = self.get_resize_edge(event.pos())
+            self.set_cursor_shape(edge)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.resize_edge = None
+            event.accept()
+        super().mouseReleaseEvent(event)
+
+    def perform_resize(self, global_pos):
+        if not self.resize_edge or not self.resize_start_geometry or not self.resize_start_pos:
+            return
+        delta = global_pos - self.resize_start_pos
+        x, y, w, h = self.resize_start_geometry.getRect()
+        min_w, min_h = self.minimumWidth(), self.minimumHeight()
+        if self.resize_edge == "right":
+            new_w = max(min_w, w + delta.x())
+            self.setGeometry(x, y, new_w, h)
+        elif self.resize_edge == "bottom":
+            new_h = max(min_h, h + delta.y())
+            self.setGeometry(x, y, w, new_h)
+        elif self.resize_edge == "left":
+            new_w = max(min_w, w - delta.x())
+            new_x = x + (w - new_w)
+            self.setGeometry(new_x, y, new_w, h)
+        elif self.resize_edge == "top":
+            new_h = max(min_h, h - delta.y())
+            new_y = y + (h - new_h)
+            self.setGeometry(x, new_y, w, new_h)
+        elif self.resize_edge == "bottom-right":
+            new_w = max(min_w, w + delta.x())
+            new_h = max(min_h, h + delta.y())
+            self.setGeometry(x, y, new_w, new_h)
+        elif self.resize_edge == "bottom-left":
+            new_w = max(min_w, w - delta.x())
+            new_h = max(min_h, h + delta.y())
+            new_x = x + (w - new_w)
+            self.setGeometry(new_x, y, new_w, new_h)
+        elif self.resize_edge == "top-right":
+            new_w = max(min_w, w + delta.x())
+            new_h = max(min_h, h - delta.y())
+            new_y = y + (h - new_h)
+            self.setGeometry(x, new_y, new_w, new_h)
+        elif self.resize_edge == "top-left":
+            new_w = max(min_w, w - delta.x())
+            new_h = max(min_h, h - delta.y())
+            new_x = x + (w - new_w)
+            new_y = y + (h - new_h)
+            self.setGeometry(new_x, new_y, new_w, new_h)
+
+    def title_mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.dragging = True
+            self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def title_mouseMoveEvent(self, event):
+        if self.dragging and event.buttons() == Qt.LeftButton:
+            self.move(event.globalPos() - self.drag_position)
+            event.accept()
+
+    def title_mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.dragging = False
+            event.accept()
+
+    # ---------- 系统托盘 ----------
+    def create_tray_icon(self):
+        self.tray_icon = QSystemTrayIcon(self)
+        self.tray_icon.setIcon(self.style().standardIcon(0))
+        tray_menu = QMenu()
+        show_action = QAction("显示窗口", self)
+        show_action.triggered.connect(self.show_window)
+        quit_action = QAction("退出程序", self)
+        quit_action.triggered.connect(self.quit_app)
+        tray_menu.addAction(show_action)
+        tray_menu.addSeparator()
+        tray_menu.addAction(quit_action)
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.activated.connect(self.on_tray_activated)
+        self.tray_icon.show()
+
+    def on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.DoubleClick:
+            self.show_window()
+
+    def show_window(self):
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def quit_app(self):
+        if hasattr(self, 'recognition_thread'):
+            self.recognition_thread.stop()
+        if hasattr(self, 'tray_icon'):
+            self.tray_icon.hide()
+        if hasattr(self, 'history_window'):
+            self.history_window.close()
+        from PyQt5.QtWidgets import QApplication
+        QApplication.quit()
+
+    # ---------- 字幕更新 ----------
+    def update_caption(self, text):
+        self.text_edit.setPlainText(text)
+        cursor = self.text_edit.textCursor()
+        cursor.movePosition(cursor.End)
+        self.text_edit.setTextCursor(cursor)
+
+    def on_final_text(self, sentence):
+        with open("recognized_text.txt", "a", encoding="utf-8") as f:
+            f.write(sentence + "\n")
+        logger.info(f"保存最终句子: {sentence}")
+        if hasattr(self, 'history_window'):
+            self.history_window.append_text(sentence)
+
+    def toggle_history_window(self):
+        if self.history_window.isVisible():
+            self.history_window.hide()
+        else:
+            self.history_window.show()
+            self.history_window.raise_()
+            self.history_window.activateWindow()
+
+    def closeEvent(self, event):
+        self.quit_app()
