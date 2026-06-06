@@ -1,5 +1,7 @@
 # main_window.py
 import logging
+import os
+from datetime import datetime
 
 from PyQt5.QtWidgets import (QWidget, QLabel, QVBoxLayout, QHBoxLayout,
                              QPushButton, QTextEdit, QMenu, QSystemTrayIcon,
@@ -12,13 +14,16 @@ from history_window import HistoryWindow
 
 logger = logging.getLogger(__name__)
 
+# 输出目录
+OUTPUT_DIR = "output"
+
 class FloatingCaption(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
 
-        self.setGeometry(300, 300, 600, 200)
+        self.setGeometry(300, 300, 900, 400)
         self.setMinimumSize(300, 120)
 
         # 调整大小相关
@@ -103,7 +108,7 @@ class FloatingCaption(QWidget):
         title_bar.setLayout(title_bar_layout)
         title_bar.setStyleSheet("background: transparent;")
 
-        # 内容区域
+        # 内容区域 - 原文显示
         self.text_edit = QTextEdit()
         self.text_edit.setReadOnly(True)
         self.text_edit.setStyleSheet("""
@@ -113,7 +118,7 @@ class FloatingCaption(QWidget):
                 font-size: 20px;
                 font-weight: bold;
                 border: none;
-                padding: 15px;
+                padding: 15px 15px 5px 15px;
             }
         """)
         self.text_edit.setFont(QFont("Microsoft YaHei", 16, QFont.Bold))
@@ -121,11 +126,32 @@ class FloatingCaption(QWidget):
         self.text_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
+        # 翻译结果显示区域（支持 HTML 渲染，显示多行翻译历史）
+        self.translation_edit = QTextEdit()
+        self.translation_edit.setReadOnly(True)
+        self.translation_edit.setStyleSheet("""
+            QTextEdit {
+                background-color: transparent;
+                color: #FFD700;
+                font-size: 18px;
+                font-weight: bold;
+                border: none;
+                padding: 5px 15px 15px 15px;
+            }
+        """)
+        self.translation_edit.setFont(QFont("Microsoft YaHei", 14, QFont.Bold))
+        self.translation_edit.setWordWrapMode(True)
+        self.translation_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.translation_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.translation_edit.setMaximumHeight(80)
+        self.translation_edit.setPlaceholderText("等待翻译结果...")
+
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
         main_layout.addWidget(title_bar)
         main_layout.addWidget(self.text_edit)
+        main_layout.addWidget(self.translation_edit)
         self.container.setLayout(main_layout)
 
         outer_layout = QVBoxLayout()
@@ -143,6 +169,14 @@ class FloatingCaption(QWidget):
         # 系统托盘
         self.create_tray_icon()
 
+        # 创建本次运行的结果输出文件（日期-时间命名，精确到秒）
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        self._output_filename = os.path.join(
+            OUTPUT_DIR,
+            f"{datetime.now().strftime('%Y%m%d-%H%M%S')}.txt"
+        )
+        logger.info(f"本次识别结果将保存至: {self._output_filename}")
+
         # 历史窗口
         self.history_window = HistoryWindow(self)
 
@@ -150,6 +184,7 @@ class FloatingCaption(QWidget):
         self.recognition_thread = SpeechRecognitionThread()
         self.recognition_thread.text_updated.connect(self.update_caption)
         self.recognition_thread.final_text.connect(self.on_final_text)
+        self.recognition_thread.translation_ready.connect(self.on_translation_ready)
         self.recognition_thread.start()
 
         self.show()
@@ -313,17 +348,42 @@ class FloatingCaption(QWidget):
 
     # ---------- 字幕更新 ----------
     def update_caption(self, text):
+        """更新原文显示"""
         self.text_edit.setPlainText(text)
         cursor = self.text_edit.textCursor()
         cursor.movePosition(cursor.End)
         self.text_edit.setTextCursor(cursor)
 
     def on_final_text(self, sentence):
-        with open("recognized_text.txt", "a", encoding="utf-8") as f:
-            f.write(sentence + "\n")
+        """保存最终识别结果到文件"""
+        with open(self._output_filename, "a", encoding="utf-8") as f:
+            f.write(f"{sentence}\n")
         logger.info(f"保存最终句子: {sentence}")
-        if hasattr(self, 'history_window'):
-            self.history_window.append_text(sentence)
+
+    def on_translation_ready(self, sentence_id, original, translated, is_final):
+        """翻译完成，只显示当前最新译文，历史记录留在历史窗口中。
+        - 中间译文（is_final=False）：灰色显示
+        - 最终译文（is_final=True）：金色显示
+        """
+        if is_final:
+            # 最终译文：金色
+            self.translation_edit.setHtml(
+                f'<span style="color: #FFD700; font-size: 18px; font-weight: bold;">📝 {translated}</span>'
+            )
+            # 保存到本次运行的文件
+            with open(self._output_filename, "a", encoding="utf-8") as f:
+                f.write(f"  → {translated}\n")
+            logger.info(f"译文: {translated}")
+            # 追加到历史窗口
+            if hasattr(self, 'history_window'):
+                self.history_window.append_text(
+                    f"🔊 {original}\n📝 {translated}"
+                )
+        else:
+            # 中间译文：灰色显示
+            self.translation_edit.setHtml(
+                f'<span style="color: #888888; font-size: 18px;">📝 {translated}</span>'
+            )
 
     def toggle_history_window(self):
         if self.history_window.isVisible():

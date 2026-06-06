@@ -13,20 +13,29 @@ import audioop
 from PyQt5.QtCore import QThread, pyqtSignal
 
 import API
-from config import API_RATE, CHUNK_MS, SILENCE_THRESHOLD, MAX_SILENCE_SEC
+from config import API_RATE, CHUNK_MS, SILENCE_THRESHOLD, MAX_SILENCE_SEC, SENTENCE_SILENCE_SEC, SENTENCE_MAX_DURATION
 from audio_utils import rms_energy
+from translation import translate_text
 
 logger = logging.getLogger(__name__)
 
 class SpeechRecognitionThread(QThread):
     text_updated = pyqtSignal(str)
     final_text = pyqtSignal(str)
+    translation_ready = pyqtSignal(str, str, str, bool)  # (sentence_id, 原文, 译文, is_final)
 
     def __init__(self):
         super().__init__()
         self.ws_app = None
         self._is_running = True
         self.audio_thread = None
+        # 断句状态
+        self._sentence_start_time = 0.0  # 当前句子开始时间
+        self._silence_start_time = 0.0   # 当前静音开始时间
+        self._is_speaking = False        # 是否正在说话
+        # 实时翻译追踪
+        self._current_sentence_id = None  # 当前句子的唯一ID
+        self._translation_lock = threading.Lock()  # 翻译去重锁
 
     def run(self):
         while self._is_running:
@@ -92,17 +101,67 @@ class SpeechRecognitionThread(QThread):
             res = json.loads(message)
             msg_type = res.get("type")
             if msg_type == "MID_TEXT" and res.get("result"):
-                self.text_updated.emit(res['result'])
+                mid_text = res['result']
+                self.text_updated.emit(mid_text)
+                # 如果是新句子，生成新ID
+                if self._current_sentence_id is None:
+                    self._start_new_sentence()
+                # 异步触发临时翻译（防抖：如果翻译线程正在跑，跳过）
+                threading.Thread(
+                    target=self._translate_and_emit,
+                    args=(self._current_sentence_id, mid_text, False),
+                    daemon=True
+                ).start()
             elif msg_type == "FIN_TEXT" and res.get("result"):
                 final = res['result']
                 self.final_text.emit(final)
                 self.text_updated.emit(final)
+                # 确保有 sentence_id
+                if self._current_sentence_id is None:
+                    self._start_new_sentence()
+                sid = self._current_sentence_id
+                # 异步最终翻译
+                threading.Thread(
+                    target=self._translate_and_emit,
+                    args=(sid, final, True),
+                    daemon=True
+                ).start()
+                self._current_sentence_id = None  # 重置，等待下一句
             elif msg_type == "ERROR":
                 logger.error(f"服务端错误: {res}")
             else:
                 logger.debug(f"服务器消息: {res}")
         except Exception as e:
             logger.error(f"处理消息异常: {e}")
+
+    def _start_new_sentence(self):
+        """新句子开始，生成短ID"""
+        import uuid as _uuid
+        self._current_sentence_id = str(_uuid.uuid4())[:8]
+
+    def _translate_and_emit(self, sentence_id, text, is_final):
+        """在后台线程中调用翻译 API，完成后发射信号"""
+        # 中间结果去重：同一句子的中间翻译同时只跑一个
+        if not is_final:
+            if not self._translation_lock.acquire(blocking=False):
+                return  # 上一轮中间翻译还没结束，跳过
+        try:
+            translated = translate_text(text)
+            if translated:
+                self.translation_ready.emit(sentence_id, text, translated, is_final)
+        finally:
+            if not is_final:
+                self._translation_lock.release()
+
+    def _send_sentence_end(self, ws):
+        """发送断句信号（发送一个JSON格式的断句标记给百度API）"""
+        try:
+            end_req = {
+                "type": "END",
+            }
+            ws.send(json.dumps(end_req), websocket.ABNF.OPCODE_TEXT)
+        except Exception as e:
+            logger.error(f"发送断句信号失败: {e}")
 
     def on_error(self, ws, error):
         logger.error(f"WebSocket 错误: {error}")
@@ -130,7 +189,7 @@ class SpeechRecognitionThread(QThread):
     def stream_speaker_audio(self, ws, loopback_device):
         p = None
         stream = None
-        silence_start = None
+        keepalive_silence_start = None  # 长静音保活计时
         try:
             p = pyaudio.PyAudio()
             original_rate = int(loopback_device["defaultSampleRate"])
@@ -155,19 +214,49 @@ class SpeechRecognitionThread(QThread):
                 raw_data = stream.read(frames_per_buffer, exception_on_overflow=False)
 
                 energy = rms_energy(raw_data)
+                now = time.time()
+
                 if energy < SILENCE_THRESHOLD:
-                    if silence_start is None:
-                        silence_start = time.time()
-                    elif time.time() - silence_start > MAX_SILENCE_SEC:
+                    # --- 静音检测 ---
+                    # 长时间静音保活
+                    if keepalive_silence_start is None:
+                        keepalive_silence_start = now
+                    elif now - keepalive_silence_start > MAX_SILENCE_SEC:
                         logger.warning(f"长时间静音 ({MAX_SILENCE_SEC}秒)，发送人工静音包保持连接")
                         expected_len = int(API_RATE * CHUNK_MS / 1000) * 2
                         silence_data = b'\x00' * expected_len
                         ws.send(silence_data, websocket.ABNF.OPCODE_BINARY)
                         packet_count += 1
-                        silence_start = time.time()
+                        keepalive_silence_start = now
                         continue
+
+                    # 断句检测：0.5秒静音
+                    if self._is_speaking:
+                        if self._silence_start_time == 0.0:
+                            self._silence_start_time = now
+                        elif now - self._silence_start_time > SENTENCE_SILENCE_SEC:
+                            # 静音超过0.5秒，发送断句信号
+                            self._send_sentence_end(ws)
+                            self._is_speaking = False
+                            self._silence_start_time = 0.0
+                            self._sentence_start_time = 0.0
+                            logger.debug(f"🔇 静音 {SENTENCE_SILENCE_SEC}s，触发断句")
                 else:
-                    silence_start = None
+                    # --- 有声音 ---
+                    keepalive_silence_start = None
+                    self._silence_start_time = 0.0
+
+                    if not self._is_speaking:
+                        # 新句子开始
+                        self._is_speaking = True
+                        self._sentence_start_time = now
+                        logger.debug("🎤 检测到语音，开始新句子")
+                    elif now - self._sentence_start_time > SENTENCE_MAX_DURATION:
+                        # 句子超过10秒，强制断句
+                        self._send_sentence_end(ws)
+                        self._sentence_start_time = now
+                        logger.debug(f"⏱️ 句子持续超过 {SENTENCE_MAX_DURATION}s，强制断句")
+
                     if packet_count % 100 == 0:
                         logger.debug(f"音频能量: {energy:.1f}")
 

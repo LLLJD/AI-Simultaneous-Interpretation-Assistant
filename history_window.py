@@ -17,6 +17,9 @@ class HistoryWindow(QWidget):
         self.setGeometry(300, 400, 800, 300)
         self.setMinimumSize(400, 150)
 
+        # 临时翻译追踪：{sentence_id: (original, translated)}
+        self._temp_translations = {}
+
         # 调整大小相关
         self.resize_edge = None
         self.resize_start_pos = None
@@ -79,7 +82,7 @@ class HistoryWindow(QWidget):
         title_bar.setLayout(title_bar_layout)
         title_bar.setStyleSheet("background: transparent;")
 
-        # 文本区域
+        # 文本区域 - 使用 QTextEdit 的 HTML 模式支持颜色
         self.text_edit = QTextEdit()
         self.text_edit.setReadOnly(True)
         self.text_edit.setStyleSheet("""
@@ -242,13 +245,34 @@ class HistoryWindow(QWidget):
     def append_text(self, text):
         if not text.strip():
             return
-        self.text_edit.append(text)
+
+        # 支持原文和译文的颜色区分
+        if "🔊" in text and "📝" in text:
+            # 分离原文和译文
+            parts = text.split("\n")
+            for part in parts:
+                if part.startswith("🔊"):
+                    self.text_edit.append(
+                        f'<span style="color: white; font-weight: bold;">{part}</span>'
+                    )
+                elif part.startswith("📝"):
+                    self.text_edit.append(f'<span style="color: #FFD700;">{part}</span><br>')
+        else:
+            self.text_edit.append(text)
         cursor = self.text_edit.textCursor()
         cursor.movePosition(cursor.End)
         self.text_edit.setTextCursor(cursor)
 
+    def update_temp_translation(self, sentence_id, original, translated):
+        """更新或添加临时翻译条目（灰色显示）。
+        当最终译文到达时，append_text 会追加最终版本，
+        临时版本保留在历史中作为参考。
+        """
+        self._temp_translations[sentence_id] = (original, translated)
+
     def clear_history(self):
         self.text_edit.clear()
+        self._temp_translations.clear()
         logger.info("历史记录已清空")
 
     def closeEvent(self, event):
