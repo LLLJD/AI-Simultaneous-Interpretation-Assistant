@@ -5,7 +5,6 @@ import warnings
 
 from PyQt5.QtWidgets import QApplication
 
-# 忽略 audioop 弃用警告
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # 配置日志（格式统一）
