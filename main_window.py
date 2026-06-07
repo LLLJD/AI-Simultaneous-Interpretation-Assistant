@@ -11,6 +11,7 @@ from PyQt5.QtGui import QFont, QCursor
 
 from voice_recognition import SpeechRecognitionThread
 from history_window import HistoryWindow
+from settings_dialog import AudioSettingsDialog
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,22 @@ class FloatingCaption(QWidget):
         title_label = QLabel("AI同声传译助手")
         title_label.setStyleSheet("color: white; font-size: 14px; background: transparent;")
 
+        self.settings_btn = QPushButton("⚙ 设置")
+        self.settings_btn.setFixedSize(60, 25)
+        self.settings_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(100, 200, 100, 100);
+                color: white;
+                border: none;
+                border-radius: 5px;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: rgba(100, 200, 100, 200);
+            }
+        """)
+        self.settings_btn.clicked.connect(self.open_settings_dialog)
+
         self.history_btn = QPushButton("📜 历史")
         self.history_btn.setFixedSize(60, 25)
         self.history_btn.setStyleSheet("""
@@ -67,6 +84,7 @@ class FloatingCaption(QWidget):
 
         title_bar_layout.addWidget(title_label)
         title_bar_layout.addStretch()
+        title_bar_layout.addWidget(self.settings_btn)
         title_bar_layout.addWidget(self.history_btn)
 
         self.min_btn = QPushButton("－")
@@ -384,6 +402,21 @@ class FloatingCaption(QWidget):
             self.translation_edit.setHtml(
                 f'<span style="color: #888888; font-size: 18px;">📝 {translated}</span>'
             )
+
+    def open_settings_dialog(self):
+        """打开音频来源设置对话框"""
+        dialog = AudioSettingsDialog(self)
+        dialog.audio_source_changed.connect(self.on_audio_source_changed)
+        dialog.exec_()
+
+    def on_audio_source_changed(self, selection):
+        """音频来源切换回调"""
+        if selection is None:
+            return
+        logger.info(f"音频来源切换: {selection}")
+        # 通知语音识别线程切换设备
+        if hasattr(self, 'recognition_thread'):
+            self.recognition_thread.switch_audio_source(selection)
 
     def toggle_history_window(self):
         if self.history_window.isVisible():

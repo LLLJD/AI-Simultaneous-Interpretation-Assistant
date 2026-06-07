@@ -36,6 +36,11 @@ class SpeechRecognitionThread(QThread):
         # 实时翻译追踪
         self._current_sentence_id = None  # 当前句子的唯一ID
         self._translation_lock = threading.Lock()  # 翻译去重锁
+        # 音频设备选择：None 表示使用默认 Loopback
+        self._audio_source_selection = None
+        self._audio_source_lock = threading.Lock()
+        self._reconnect_event = threading.Event()  # 触发重连信号
+        self._force_stop_audio = threading.Event()  # 强制终止音频采集线程
 
     def run(self):
         while self._is_running:
@@ -60,10 +65,34 @@ class SpeechRecognitionThread(QThread):
 
     def stop(self):
         self._is_running = False
+        self._reconnect_event.set()  # 唤醒可能等待的线程
         if self.ws_app and self.ws_app.sock:
             self.ws_app.close()
         self.quit()
         self.wait()
+
+    def switch_audio_source(self, selection):
+        """切换音频来源设备
+        selection: {"type": "loopback", "device_index": int} 或
+                   {"type": "microphone", "device_index": int}
+        """
+        with self._audio_source_lock:
+            self._audio_source_selection = selection
+        logger.info(f"音频来源切换为: {selection}")
+
+        # 1. 强制终止旧音频采集线程
+        self._force_stop_audio.set()
+        if self.audio_thread and self.audio_thread.is_alive():
+            logger.info("等待旧音频线程结束...")
+            self.audio_thread.join(timeout=3)
+            if self.audio_thread.is_alive():
+                logger.warning("旧音频线程未在3秒内结束，继续执行")
+
+        # 2. 关闭 WebSocket，触发 run() 中的 run_forever() 返回，自动重连
+        if self.ws_app and self.ws_app.sock:
+            self.ws_app.close()
+            self._reconnect_event.set()
+        logger.info("已触发重连，即将使用新设备重新开始")
 
     def on_open(self, ws):
         start_req = {
@@ -80,10 +109,23 @@ class SpeechRecognitionThread(QThread):
         ws.send(json.dumps(start_req), websocket.ABNF.OPCODE_TEXT)
         logger.info("📤 已发送 START 指令")
 
+        # 清除强制终止标志（新连接开始）
+        self._force_stop_audio.clear()
+
+        # 根据用户选择获取音频设备
         try:
-            loopback_device = self.get_default_speaker_loopback()
+            with self._audio_source_lock:
+                selection = self._audio_source_selection
+            if selection is None or selection.get("type") == "loopback":
+                audio_device = self.get_loopback_device(
+                    selection.get("device_index") if selection else None
+                )
+            else:
+                audio_device = self.get_microphone_device(
+                    selection.get("device_index")
+                )
         except Exception as e:
-            logger.error(f"无法获取扬声器 Loopback 设备: {e}")
+            logger.error(f"无法获取音频设备: {e}")
             ws.close()
             return
 
@@ -91,7 +133,7 @@ class SpeechRecognitionThread(QThread):
             self.audio_thread.join(timeout=2)
         self.audio_thread = threading.Thread(
             target=self.stream_speaker_audio,
-            args=(ws, loopback_device),
+            args=(ws, audio_device),
             daemon=True
         )
         self.audio_thread.start()
@@ -130,7 +172,9 @@ class SpeechRecognitionThread(QThread):
             elif msg_type == "ERROR":
                 logger.error(f"服务端错误: {res}")
             else:
-                logger.debug(f"服务器消息: {res}")
+                logger.info(f"服务器消息: {res}")
+        except json.JSONDecodeError:
+            logger.warning(f"收到非 JSON 消息: {message[:200]}")
         except Exception as e:
             logger.error(f"处理消息异常: {e}")
 
@@ -168,50 +212,105 @@ class SpeechRecognitionThread(QThread):
 
     def on_close(self, ws, close_status_code, close_msg):
         logger.info(f"WebSocket 关闭: code={close_status_code}, msg={close_msg}")
+        # 如果 close_msg 是 bytes，尝试解码
+        if isinstance(close_msg, bytes) and close_msg:
+            try:
+                msg_str = close_msg.decode('utf-8')
+                logger.info(f"WebSocket 关闭消息(解码): {msg_str}")
+            except Exception:
+                pass
         if self.audio_thread and self.audio_thread.is_alive():
             self.audio_thread.join(timeout=2)
 
     # ---------- 音频设备与采集 ----------
-    def get_default_speaker_loopback(self):
+    @staticmethod
+    def _is_loopback_device(dev_info):
+        """判断设备是否为 WASAPI Loopback 设备"""
+        name = dev_info.get('name', '')
+        return 'loopback' in name.lower()
+
+    def get_loopback_device(self, device_index=None):
+        """获取 Loopback 设备信息
+        device_index: 指定设备索引，None 则使用默认
+        """
         p = pyaudio.PyAudio()
         try:
-            loopback_device = p.get_default_wasapi_loopback()
-            if not loopback_device:
-                raise RuntimeError("未找到默认的 WASAPI Loopback 设备")
-            logger.info(f"扬声器 Loopback 设备: {loopback_device['name']} (ID={loopback_device['index']})")
-            return loopback_device
+            if device_index is not None:
+                # 使用指定索引的 Loopback 设备：遍历所有设备找到对应 Loopback
+                for i in range(p.get_device_count()):
+                    dev = p.get_device_info_by_index(i)
+                    if dev['index'] == device_index and self._is_loopback_device(dev):
+                        logger.info(f"扬声器 Loopback 设备: {dev['name']} (ID={dev['index']})")
+                        return dev
+                raise RuntimeError(f"未找到索引为 {device_index} 的 Loopback 设备")
+            else:
+                # 使用默认 Loopback
+                loopback_device = p.get_default_wasapi_loopback()
+                if not loopback_device:
+                    raise RuntimeError("未找到默认的 WASAPI Loopback 设备")
+                logger.info(f"扬声器 Loopback 设备: {loopback_device['name']} (ID={loopback_device['index']})")
+                return loopback_device
         except Exception as e:
             logger.error(f"获取扬声器 Loopback 设备失败: {e}")
             raise
         finally:
             p.terminate()
 
-    def stream_speaker_audio(self, ws, loopback_device):
+    def get_microphone_device(self, device_index):
+        """获取麦克风设备信息"""
+        p = pyaudio.PyAudio()
+        try:
+            dev_info = p.get_device_info_by_index(device_index)
+            if dev_info.get('maxInputChannels', 0) == 0:
+                raise RuntimeError(f"设备 {dev_info['name']} 不是输入设备")
+            logger.info(f"麦克风设备: {dev_info['name']} (ID={device_index}, {int(dev_info['defaultSampleRate'])}Hz)")
+            return dev_info
+        except Exception as e:
+            logger.error(f"获取麦克风设备失败: {e}")
+            raise
+        finally:
+            p.terminate()
+
+    def stream_speaker_audio(self, ws, audio_device):
         p = None
         stream = None
         keepalive_silence_start = None  # 长静音保活计时
         try:
             p = pyaudio.PyAudio()
-            original_rate = int(loopback_device["defaultSampleRate"])
+            original_rate = int(audio_device["defaultSampleRate"])
+            channels = audio_device["maxInputChannels"]
             frames_per_buffer = int(original_rate * CHUNK_MS / 1000.0)
             frames_per_buffer = max(frames_per_buffer, 1)
 
             stream = p.open(
                 format=pyaudio.paInt16,
-                channels=loopback_device["maxInputChannels"],
+                channels=channels,
                 rate=original_rate,
                 input=True,
-                input_device_index=loopback_device["index"],
+                input_device_index=audio_device["index"],
                 frames_per_buffer=frames_per_buffer
             )
-            logger.info(f"🎧 开始捕获扬声器音频 | 设备: {loopback_device['name']} | 采样率: {original_rate}Hz | 声道数: {loopback_device['maxInputChannels']} | 块大小: {frames_per_buffer}帧 ({CHUNK_MS}ms)")
+            logger.info(f"🎧 开始捕获音频 | 设备: {audio_device['name']} | 采样率: {original_rate}Hz | 声道数: {channels} | 块大小: {frames_per_buffer}帧 ({CHUNK_MS}ms)")
 
             packet_count = 0
             interval = CHUNK_MS / 1000.0
             next_send = time.perf_counter()
 
-            while ws.sock and ws.sock.connected:
-                raw_data = stream.read(frames_per_buffer, exception_on_overflow=False)
+            while self._is_running:
+                # 检查是否被强制终止（切换音频来源时）
+                if self._force_stop_audio.is_set():
+                    logger.info("收到强制终止信号，退出音频采集")
+                    break
+
+                if not ws.sock or not ws.sock.connected:
+                    # WebSocket 已断开，等待重连或线程停止
+                    time.sleep(0.5)
+                    continue
+
+                try:
+                    raw_data = stream.read(frames_per_buffer, exception_on_overflow=False)
+                except Exception:
+                    continue
 
                 energy = rms_energy(raw_data)
                 now = time.time()
@@ -225,7 +324,10 @@ class SpeechRecognitionThread(QThread):
                         logger.warning(f"长时间静音 ({MAX_SILENCE_SEC}秒)，发送人工静音包保持连接")
                         expected_len = int(API_RATE * CHUNK_MS / 1000) * 2
                         silence_data = b'\x00' * expected_len
-                        ws.send(silence_data, websocket.ABNF.OPCODE_BINARY)
+                        try:
+                            ws.send(silence_data, websocket.ABNF.OPCODE_BINARY)
+                        except Exception:
+                            continue
                         packet_count += 1
                         keepalive_silence_start = now
                         continue
@@ -236,7 +338,10 @@ class SpeechRecognitionThread(QThread):
                             self._silence_start_time = now
                         elif now - self._silence_start_time > SENTENCE_SILENCE_SEC:
                             # 静音超过0.5秒，发送断句信号
-                            self._send_sentence_end(ws)
+                            try:
+                                self._send_sentence_end(ws)
+                            except Exception:
+                                pass
                             self._is_speaking = False
                             self._silence_start_time = 0.0
                             self._sentence_start_time = 0.0
@@ -253,14 +358,16 @@ class SpeechRecognitionThread(QThread):
                         logger.debug("🎤 检测到语音，开始新句子")
                     elif now - self._sentence_start_time > SENTENCE_MAX_DURATION:
                         # 句子超过10秒，强制断句
-                        self._send_sentence_end(ws)
+                        try:
+                            self._send_sentence_end(ws)
+                        except Exception:
+                            pass
                         self._sentence_start_time = now
                         logger.debug(f"⏱️ 句子持续超过 {SENTENCE_MAX_DURATION}s，强制断句")
 
                     if packet_count % 100 == 0:
                         logger.debug(f"音频能量: {energy:.1f}")
 
-                channels = loopback_device["maxInputChannels"]
                 if channels > 1:
                     fmt = f"<{channels}h"
                     frame_size = struct.calcsize(fmt)
@@ -282,7 +389,10 @@ class SpeechRecognitionThread(QThread):
                 elif len(converted) < expected_len:
                     converted += b'\x00' * (expected_len - len(converted))
 
-                ws.send(converted, websocket.ABNF.OPCODE_BINARY)
+                try:
+                    ws.send(converted, websocket.ABNF.OPCODE_BINARY)
+                except Exception:
+                    continue
                 packet_count += 1
                 if packet_count % 200 == 0:
                     logger.info(f"已发送 {packet_count} 个音频包")
@@ -293,7 +403,7 @@ class SpeechRecognitionThread(QThread):
                     time.sleep(sleep_time)
 
         except websocket.WebSocketConnectionClosedException:
-            logger.warning("WebSocket 连接已关闭，音频线程退出")
+            logger.info("WebSocket 连接已关闭，等待重连...")
         except Exception as e:
             logger.error(f"扬声器音频捕获异常: {e}", exc_info=True)
         finally:
