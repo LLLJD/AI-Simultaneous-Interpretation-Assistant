@@ -100,7 +100,8 @@ python app.py
 | audioop / struct | 音频格式转换（重采样、声道合并） |
 
 ## 🛠️ 流程图
-<img width="666" height="407" alt="屏幕截图 2026-06-07 193439" src="https://github.com/user-attachments/assets/e542bad2-b165-43e3-97a8-e45c772e499b" />
+<img width="853" height="504" alt="image" src="https://github.com/user-attachments/assets/8695cd5f-60db-42bc-a9cb-dc9ec8f0fed8" />
+
 
 
 ## 📖 使用说明
