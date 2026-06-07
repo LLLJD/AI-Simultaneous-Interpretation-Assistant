@@ -1,7 +1,8 @@
 # 🎧 AI同声传译助手
 
 实时捕获系统扬声器输出的音频，调用百度语音识别 API 和百度翻译 API，以悬浮字幕形式显示识别原文与实时翻译结果，支持历史记录查看。无需上传文件，即开即用。
-
+# 视频演示：
+地址：https://www.bilibili.com/video/BV1yAEb6BEHc/?vd_source=27ae1306eee71c108aa130cc68bec235
 ## ✨ 功能特点
 
 - 🎙️ **实时捕获音频**：自动录制系统播放的音频（如会议、视频、音乐），可自主选择具体的麦克风/扬声器等音频输出设备
@@ -97,6 +98,10 @@ python app.py
 | websocket-client | WebSocket 通信 |
 | markdown | Markdown 转 HTML 渲染 |
 | audioop / struct | 音频格式转换（重采样、声道合并） |
+
+## 🛠️ 流程图
+<img width="666" height="407" alt="屏幕截图 2026-06-07 193439" src="https://github.com/user-attachments/assets/e542bad2-b165-43e3-97a8-e45c772e499b" />
+
 
 ## 📖 使用说明
 
