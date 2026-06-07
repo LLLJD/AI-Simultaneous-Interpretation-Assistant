@@ -62,7 +62,7 @@ pip install -r requirements.txt
 # 百度语音识别（从 https://console.bce.baidu.com/ 获取）
 APPID = "你的语音AppID"      # 一串数字
 APIKEY = "你的语音API Key"    # 字母数字混合
-DEV_PID = 1737               # 1736 为英语模型（根据需求修改）
+DEV_PID = 1737               # 1737 为英语模型（根据需求修改）
 URI = "wss://vop.baidu.com/realtime_asr"
 
 # 百度翻译 API（从 https://fanyi-api.baidu.com/ 获取）
