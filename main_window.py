@@ -5,8 +5,8 @@ from datetime import datetime
 
 from PyQt5.QtWidgets import (QWidget, QLabel, QVBoxLayout, QHBoxLayout,
                              QPushButton, QTextEdit, QMenu, QSystemTrayIcon,
-                             QAction)
-from PyQt5.QtCore import Qt
+                             QAction, QMessageBox)
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont, QCursor
 
 from voice_recognition import SpeechRecognitionThread
@@ -17,6 +17,29 @@ logger = logging.getLogger(__name__)
 
 # 输出目录
 OUTPUT_DIR = "output"
+
+
+class SummarizationWorker(QThread):
+    """在子线程中执行 AI 总结，避免阻塞 UI"""
+
+    finished = pyqtSignal(str)   # 总结成功，携带 Markdown 结果
+    error = pyqtSignal(str)      # 总结失败，携带错误信息
+
+    def __init__(self, original_texts: str, translated_texts: str):
+        super().__init__()
+        self.original_texts = original_texts
+        self.translated_texts = translated_texts
+
+    def run(self):
+        try:
+            from summarization import summarize_history
+            result = summarize_history(self.original_texts, self.translated_texts)
+            if result:
+                self.finished.emit(result)
+            else:
+                self.error.emit("AI 总结失败：未返回结果，请检查 DeepSeek API Key 是否正确配置。")
+        except Exception as e:
+            self.error.emit(f"AI 总结异常: {str(e)}")
 
 class FloatingCaption(QWidget):
     def __init__(self):
@@ -226,6 +249,7 @@ class FloatingCaption(QWidget):
 
         # 历史窗口
         self.history_window = HistoryWindow(self)
+        self.history_window.summarize_requested.connect(self.on_summarize_requested)
 
         # 启动语音识别线程
         self.recognition_thread = SpeechRecognitionThread()
@@ -525,6 +549,38 @@ class FloatingCaption(QWidget):
             self.history_window.show()
             self.history_window.raise_()
             self.history_window.activateWindow()
+
+    # ---------- AI 总结 ----------
+    def on_summarize_requested(self):
+        """历史窗口点击总结按钮后的处理"""
+        # 获取历史记录中的原文和译文
+        original_texts, translated_texts = self.history_window.get_history_texts()
+
+        if not original_texts.strip() and not translated_texts.strip():
+            QMessageBox.information(self, "提示", "历史记录为空，无法进行总结。")
+            self.history_window.set_summarize_enabled(True)
+            return
+
+        logger.info(f"开始 AI 总结，原文 {len(original_texts)} 字符，译文 {len(translated_texts)} 字符")
+
+        # 在子线程中执行总结
+        self._summarize_worker = SummarizationWorker(original_texts, translated_texts)
+        self._summarize_worker.finished.connect(self._on_summarize_finished)
+        self._summarize_worker.error.connect(self._on_summarize_error)
+        self._summarize_worker.start()
+
+    def _on_summarize_finished(self, markdown_result: str):
+        """AI 总结完成"""
+        logger.info("AI 总结完成，显示到历史窗口")
+        self.history_window.display_summary(markdown_result)
+        self.translation_edit.setPlaceholderText("AI 总结已完成，请查看历史窗口")
+
+    def _on_summarize_error(self, error_msg: str):
+        """AI 总结失败"""
+        logger.error(f"AI 总结失败: {error_msg}")
+        self.history_window.set_summarize_enabled(True)
+        QMessageBox.warning(self, "总结失败", error_msg)
+        self.translation_edit.setPlaceholderText("AI 总结失败，请检查 API 配置")
 
     def closeEvent(self, event):
         self.quit_app()

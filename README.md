@@ -9,6 +9,7 @@
 - 🌐 **实时翻译**：边说话边翻译，中间结果灰色显示，最终结果金色确认，流畅自然
 - 🪟 **悬浮字幕窗口**：置顶半透明窗口，支持拖拽、调整大小，实时显示当前识别内容和译文
 - 📜 **历史记录窗口**：独立窗口保存所有识别句子及翻译，支持清空
+- 🤖 **AI 对话总结**：基于 DeepSeek + LangChain Agent 智能总结对话内容，生成结构化 Markdown 报告
 - 📁 **自动归档**：每次运行自动生成 `output/YYYYMMDD-HHMMSS.txt` 文件保存完整记录
 - 🔌 **自动重连**：网络断开后自动重连，静音时发送保活包
 - 🎨 **美观界面**：基于 PyQt5 的毛玻璃主题
@@ -23,6 +24,7 @@ AI-Simultaneous-Interpretation-Assistant/
 ├── settings_dialog.py    # 设置窗口
 ├── voice_recognition.py  # 语音识别与音频采集线程
 ├── translation.py        # 百度翻译 API 封装
+├── summarization.py      # DeepSeek AI 对话总结（LangChain Agent）
 ├── audio_utils.py        # 音频能量计算等辅助函数
 ├── config.py             # 全局配置（采样率、静音阈值、断句参数等）
 ├── API.py                # API 密钥配置（需自行创建）
@@ -69,6 +71,11 @@ URI = "wss://vop.baidu.com/realtime_asr"
 # 百度翻译 API（从 https://fanyi-api.baidu.com/ 获取）
 TAPPID = "你的翻译AppID"       # 一串数字
 TSECRETKEY = "你的翻译密钥"     # 字母数字混合
+
+# DeepSeek AI 总结（从 https://platform.deepseek.com/api_keys 获取）
+DEEPSEEK_API_KEY = "sk-xxx"                     # 你的 DeepSeek API Key
+DEEPSEEK_MODEL = "deepseek-chat"                # 模型名称
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"  # API 地址
 ```
 
 ### 5. 运行应用
@@ -85,8 +92,10 @@ python app.py
 | PyQt5 | 桌面图形界面（悬浮窗、历史窗口、系统托盘） |
 | 百度实时语音 API | 实时语音识别（WebSocket） |
 | 百度翻译 API | 实时文本翻译（HTTP） |
+| DeepSeek + LangChain Agent | AI 对话内容智能总结 |
 | pyaudiowpatch | Windows 扬声器捕获（WASAPI Loopback） |
 | websocket-client | WebSocket 通信 |
+| markdown | Markdown 转 HTML 渲染 |
 | audioop / struct | 音频格式转换（重采样、声道合并） |
 
 ## 📖 使用说明
@@ -102,14 +111,17 @@ python app.py
 4. **实时翻译**：说话过程中，中间识别结果会触发灰色临时翻译；句子结束后，最终翻译以金色显示。
 5. 识别结果和译文会实时显示在主窗口中，完整记录自动保存到 `output/` 目录下以日期时间命名的文件，并追加到历史窗口。
 6. 历史窗口支持清空所有记录。
+7. 点击历史窗口的"🤖 总结"按钮，可使用 DeepSeek AI 对当前对话历史进行智能总结，生成结构化 Markdown 报告。
 
 ## ⚠️ 注意事项
 
 - **仅支持 Windows**：依赖 `pyaudiowpatch` 的 WASAPI Loopback 功能，Linux/macOS 需要替换音频后端。
 - **扬声器音量**：确保系统音量足够大，且没有静音。
 - **网络要求**：需要稳定的互联网连接，用于调用百度实时识别 API 和翻译 API。
-- **API 配额**：语音识别和翻译均使用百度 API，请确保账户余额充足。
+- **API 配额**：语音识别和翻译均使用百度 API，Agent总结需用到Deepseek API 请确保账户余额充足。
 - **静音保持**：如果长时间没有音频输出，程序会自动发送静音包以保持连接不断开。
+- **路径中不得有中文**：出现中文会导致QT找不到路径
+- **Python版本需在3.13以下**：若版本在3.13以上，会出现audioop软件包找不到的错误 需要手动下载audioop(3.13 后被提出默认的软件库)
 
 ## 🐛 常见问题
 
@@ -124,6 +136,9 @@ A: 确保 `history_window.py` 存在，且点击"历史"按钮后窗口弹出。
 
 **Q: WebSocket 频繁断开？**  
 A: 可能是网络不稳定或长时间静音。代码已包含自动重连和静音保活包，一般可自动恢复。
+
+**Q: AI 总结功能不可用？**  
+A: 确保 `API.py` 中已正确配置 `DEEPSEEK_API_KEY`（从 [DeepSeek 开放平台](https://platform.deepseek.com/api_keys) 获取），且账户余额充足。也可在设置界面中配置。
 
 ## 📜 许可证
 

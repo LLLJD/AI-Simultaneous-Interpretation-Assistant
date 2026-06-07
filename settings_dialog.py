@@ -38,7 +38,8 @@ def load_api_values():
         # 尝试 reload 获取最新值
         import importlib
         importlib.reload(API)
-        for key in ["APPID", "APIKEY", "DEV_PID", "URI", "TAPPID", "TSECRETKEY"]:
+        for key in ["APPID", "APIKEY", "DEV_PID", "URI", "TAPPID", "TSECRETKEY",
+                     "DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "DEEPSEEK_BASE_URL"]:
             val = getattr(API, key, "")
             values[key] = str(val) if val else ""
     except ImportError:
@@ -59,6 +60,11 @@ URI = "{values.get('URI', 'wss://vop.baidu.com/realtime_asr')}"
 # 百度翻译 API（从 https://fanyi-api.baidu.com/ 获取）
 TSECRETKEY = "{values.get('TSECRETKEY', '')}"
 TAPPID = "{values.get('TAPPID', '')}"
+
+# DeepSeek AI 总结（从 https://platform.deepseek.com/api_keys 获取）
+DEEPSEEK_API_KEY = "{values.get('DEEPSEEK_API_KEY', '')}"
+DEEPSEEK_MODEL = "{values.get('DEEPSEEK_MODEL', 'deepseek-chat')}"
+DEEPSEEK_BASE_URL = "{values.get('DEEPSEEK_BASE_URL', 'https://api.deepseek.com')}"
 '''
     with open(API_FILE, "w", encoding="utf-8") as f:
         f.write(content)
@@ -76,7 +82,7 @@ class AudioSettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("设置")
-        self.setMinimumSize(520, 600)
+        self.setMinimumSize(520, 750)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
 
         self.pyaudio_instance = None
@@ -181,11 +187,33 @@ class AudioSettingsDialog(QDialog):
         trans_form.addRow("TAPPID:", self.tappid_edit)
         trans_form.addRow("TSECRETKEY:", self.tsecretkey_edit)
 
+        # DeepSeek AI 总结 API
+        deepseek_label = QLabel("DeepSeek AI 总结")
+        deepseek_label.setStyleSheet("font-weight: bold; color: #9C27B0; font-size: 13px;")
+
+        deepseek_form = QFormLayout()
+        deepseek_form.setSpacing(6)
+
+        self.deepseek_apikey_edit = QLineEdit()
+        self.deepseek_apikey_edit.setPlaceholderText("请输入 DeepSeek API Key（sk-xxx...）")
+        self.deepseek_apikey_edit.setEchoMode(QLineEdit.Password)
+        self.deepseek_model_edit = QLineEdit()
+        self.deepseek_model_edit.setPlaceholderText("deepseek-chat（默认模型）")
+        self.deepseek_baseurl_edit = QLineEdit()
+        self.deepseek_baseurl_edit.setPlaceholderText("https://api.deepseek.com")
+
+        deepseek_form.addRow("API Key:", self.deepseek_apikey_edit)
+        deepseek_form.addRow("Model:", self.deepseek_model_edit)
+        deepseek_form.addRow("Base URL:", self.deepseek_baseurl_edit)
+
         api_layout.addWidget(asr_label)
         api_layout.addLayout(asr_form)
         api_layout.addSpacing(8)
         api_layout.addWidget(trans_label)
         api_layout.addLayout(trans_form)
+        api_layout.addSpacing(8)
+        api_layout.addWidget(deepseek_label)
+        api_layout.addLayout(deepseek_form)
         api_group.setLayout(api_layout)
 
         # ========== 状态提示 ==========
@@ -255,6 +283,9 @@ class AudioSettingsDialog(QDialog):
             ("URI", self.uri_edit, "wss://vop.baidu.com/realtime_asr"),
             ("TAPPID", self.tappid_edit, ""),
             ("TSECRETKEY", self.tsecretkey_edit, ""),
+            ("DEEPSEEK_API_KEY", self.deepseek_apikey_edit, ""),
+            ("DEEPSEEK_MODEL", self.deepseek_model_edit, "deepseek-chat"),
+            ("DEEPSEEK_BASE_URL", self.deepseek_baseurl_edit, "https://api.deepseek.com"),
         ]:
             val = values.get(key, "")
             if val and not _is_placeholder(val):
@@ -374,6 +405,9 @@ class AudioSettingsDialog(QDialog):
             "URI": self.uri_edit.text().strip(),
             "TAPPID": self.tappid_edit.text().strip(),
             "TSECRETKEY": self.tsecretkey_edit.text().strip(),
+            "DEEPSEEK_API_KEY": self.deepseek_apikey_edit.text().strip(),
+            "DEEPSEEK_MODEL": self.deepseek_model_edit.text().strip() or "deepseek-chat",
+            "DEEPSEEK_BASE_URL": self.deepseek_baseurl_edit.text().strip() or "https://api.deepseek.com",
         }
 
         # 检查是否有占位文本或空值

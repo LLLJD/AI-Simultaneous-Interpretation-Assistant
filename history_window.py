@@ -1,14 +1,18 @@
 # history_window.py
 import logging
+import markdown
 
 from PyQt5.QtWidgets import (QWidget, QLabel, QVBoxLayout, QHBoxLayout,
                              QPushButton, QTextEdit)
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
 
 logger = logging.getLogger(__name__)
 
 class HistoryWindow(QWidget):
+    # 信号：请求 AI 总结
+    summarize_requested = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
@@ -19,6 +23,9 @@ class HistoryWindow(QWidget):
 
         # 临时翻译追踪：{sentence_id: (original, translated)}
         self._temp_translations = {}
+
+        # 总结进行中标记
+        self._summarizing = False
 
         # 调整大小相关
         self.resize_edge = None
@@ -43,6 +50,26 @@ class HistoryWindow(QWidget):
         title_label.setStyleSheet("color: white; font-size: 14px; background: transparent;")
         title_bar_layout.addWidget(title_label)
         title_bar_layout.addStretch()
+
+        # 总结按钮
+        self.summarize_btn = QPushButton("🤖 总结")
+        self.summarize_btn.setFixedSize(70, 25)
+        self.summarize_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(156, 39, 176, 150);
+                color: white;
+                border: none;
+                border-radius: 5px;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: rgba(156, 39, 176, 220);
+            }
+            QPushButton:disabled {
+                background-color: rgba(128, 128, 128, 80);
+            }
+        """)
+        self.summarize_btn.clicked.connect(self._on_summarize_clicked)
 
         self.clear_btn = QPushButton("清空")
         self.clear_btn.setFixedSize(40, 25)
@@ -77,6 +104,7 @@ class HistoryWindow(QWidget):
         """)
         self.close_btn.clicked.connect(self.hide)
 
+        title_bar_layout.addWidget(self.summarize_btn)
         title_bar_layout.addWidget(self.clear_btn)
         title_bar_layout.addWidget(self.close_btn)
         title_bar.setLayout(title_bar_layout)
@@ -274,6 +302,85 @@ class HistoryWindow(QWidget):
         self.text_edit.clear()
         self._temp_translations.clear()
         logger.info("历史记录已清空")
+
+    def _on_summarize_clicked(self):
+        """用户点击总结按钮"""
+        if self._summarizing:
+            return
+        # 检查是否有历史内容
+        if not self.text_edit.toPlainText().strip():
+            return
+        self._summarizing = True
+        self.summarize_btn.setEnabled(False)
+        self.summarize_btn.setText("⏳ 总结中...")
+        self.summarize_requested.emit()
+
+    def set_summarize_enabled(self, enabled: bool):
+        """外部控制总结按钮是否可用"""
+        self._summarizing = not enabled
+        self.summarize_btn.setEnabled(enabled)
+        if enabled:
+            self.summarize_btn.setText("🤖 总结")
+        else:
+            self.summarize_btn.setText("⏳ 总结中...")
+
+    def get_history_texts(self):
+        """获取历史记录中的原文和译文（分开返回，用于 AI 总结）"""
+        plain_text = self.text_edit.toPlainText()
+        original_lines = []
+        translated_lines = []
+
+        for line in plain_text.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("🔊"):
+                original_lines.append(line[1:].strip())
+            elif line.startswith("📝"):
+                translated_lines.append(line[1:].strip())
+
+        return "\n".join(original_lines), "\n".join(translated_lines)
+
+    def display_summary(self, markdown_text: str):
+        """在历史窗口中显示 Markdown 格式的总结报告"""
+        try:
+            # 将 Markdown 转换为 HTML
+            html_body = markdown.markdown(
+                markdown_text,
+                extensions=["extra", "codehilite", "tables", "fenced_code"]
+            )
+        except Exception:
+            # 如果 markdown 转换失败，使用纯文本
+            html_body = markdown_text.replace("\n", "<br>")
+
+        # 构建完整的 HTML，带样式
+        styled_html = f"""
+        <div style="
+            background-color: rgba(156, 39, 176, 30);
+            border: 1px solid rgba(156, 39, 176, 100);
+            border-radius: 10px;
+            padding: 15px;
+            margin: 10px 0;
+        ">
+            <h2 style="color: #CE93D8; margin-top: 0; font-size: 18px;">
+                🤖 AI 总结报告
+            </h2>
+            <div style="color: #E1BEE7; font-size: 14px; line-height: 1.6;">
+                {html_body}
+            </div>
+        </div>
+        """
+
+        # 追加到历史窗口
+        self.text_edit.append(styled_html)
+        cursor = self.text_edit.textCursor()
+        cursor.movePosition(cursor.End)
+        self.text_edit.setTextCursor(cursor)
+
+        self._summarizing = False
+        self.summarize_btn.setEnabled(True)
+        self.summarize_btn.setText("🤖 总结")
+        logger.info("AI 总结已显示在历史窗口")
 
     def closeEvent(self, event):
         self.hide()
