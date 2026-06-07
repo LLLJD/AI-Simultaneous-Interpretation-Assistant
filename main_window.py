@@ -162,7 +162,35 @@ class FloatingCaption(QWidget):
         self.translation_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.translation_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.translation_edit.setMaximumHeight(80)
-        self.translation_edit.setPlaceholderText("等待翻译结果...")
+        self.translation_edit.setPlaceholderText("点击下方按钮开始识别")
+
+        # 底部栏：识别控制按钮
+        bottom_bar = QWidget()
+        bottom_bar_layout = QHBoxLayout()
+        bottom_bar_layout.setContentsMargins(10, 5, 10, 8)
+
+        self.recognition_toggle_btn = QPushButton("▶ 开始识别")
+        self.recognition_toggle_btn.setFixedSize(100, 30)
+        self.recognition_toggle_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(76, 175, 80, 180);
+                color: white;
+                border: none;
+                border-radius: 8px;
+                font-size: 13px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: rgba(76, 175, 80, 230);
+            }
+        """)
+        self.recognition_toggle_btn.clicked.connect(self.toggle_recognition)
+        self._recognition_active = False
+
+        bottom_bar_layout.addStretch()
+        bottom_bar_layout.addWidget(self.recognition_toggle_btn)
+        bottom_bar.setLayout(bottom_bar_layout)
+        bottom_bar.setStyleSheet("background: transparent;")
 
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -170,6 +198,7 @@ class FloatingCaption(QWidget):
         main_layout.addWidget(title_bar)
         main_layout.addWidget(self.text_edit)
         main_layout.addWidget(self.translation_edit)
+        main_layout.addWidget(bottom_bar)
         self.container.setLayout(main_layout)
 
         outer_layout = QVBoxLayout()
@@ -404,19 +433,90 @@ class FloatingCaption(QWidget):
             )
 
     def open_settings_dialog(self):
-        """打开音频来源设置对话框"""
+        """打开音频来源设置对话框（打开前自动暂停识别）"""
+        # 如果正在识别，先自动暂停
+        if self._recognition_active:
+            self.recognition_thread.pause()
+            self._recognition_active = False
+            self.recognition_toggle_btn.setText("▶ 开始识别")
+            self.recognition_toggle_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(76, 175, 80, 180);
+                    color: white;
+                    border: none;
+                    border-radius: 8px;
+                    font-size: 13px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: rgba(76, 175, 80, 230);
+                }
+            """)
+            self.translation_edit.setPlaceholderText("设置已暂停识别，请手动恢复")
+            logger.info("打开设置对话框，已自动暂停识别")
+
         dialog = AudioSettingsDialog(self)
         dialog.audio_source_changed.connect(self.on_audio_source_changed)
+        dialog.api_saved.connect(self.on_api_saved)
         dialog.exec_()
 
     def on_audio_source_changed(self, selection):
-        """音频来源切换回调"""
+        """音频来源切换回调（切换后需用户手动点击开始）"""
         if selection is None:
             return
         logger.info(f"音频来源切换: {selection}")
-        # 通知语音识别线程切换设备
+        # 通知语音识别线程切换设备（不自动恢复，等用户手动点击）
         if hasattr(self, 'recognition_thread'):
             self.recognition_thread.switch_audio_source(selection)
+        self.translation_edit.setPlaceholderText("音频来源已切换，点击下方按钮开始识别")
+
+    def on_api_saved(self):
+        """API 配置已保存并热重载"""
+        logger.info("API 配置已保存，模块已热重载")
+        self.translation_edit.setPlaceholderText("API 已更新，点击下方按钮开始识别")
+
+    def toggle_recognition(self):
+        """切换识别状态（暂停/恢复）"""
+        if not hasattr(self, 'recognition_thread'):
+            return
+        if self._recognition_active:
+            # 暂停
+            self.recognition_thread.pause()
+            self._recognition_active = False
+            self.recognition_toggle_btn.setText("▶ 开始识别")
+            self.recognition_toggle_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(76, 175, 80, 180);
+                    color: white;
+                    border: none;
+                    border-radius: 8px;
+                    font-size: 13px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: rgba(76, 175, 80, 230);
+                }
+            """)
+            self.translation_edit.setPlaceholderText("识别已暂停")
+        else:
+            # 恢复
+            self.recognition_thread.resume()
+            self._recognition_active = True
+            self.recognition_toggle_btn.setText("⏸ 暂停识别")
+            self.recognition_toggle_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(255, 165, 0, 180);
+                    color: white;
+                    border: none;
+                    border-radius: 8px;
+                    font-size: 13px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: rgba(255, 165, 0, 230);
+                }
+            """)
+            self.translation_edit.setPlaceholderText("等待翻译结果...")
 
     def toggle_history_window(self):
         if self.history_window.isVisible():

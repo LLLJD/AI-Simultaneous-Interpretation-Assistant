@@ -1,25 +1,82 @@
 # settings_dialog.py
 import logging
+import os
+import sys
 
 import pyaudiowpatch as pyaudio
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QComboBox, QPushButton, QGroupBox, QRadioButton,
-                             QButtonGroup, QMessageBox)
+                             QButtonGroup, QMessageBox, QLineEdit, QScrollArea,
+                             QWidget, QFormLayout)
 from PyQt5.QtCore import Qt, pyqtSignal
 
 logger = logging.getLogger(__name__)
 
+# API.py 路径
+API_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "API.py")
+
+# 默认占位文本，用于判断是否需要用户填写
+PLACEHOLDER_PATTERNS = ["请放入你的api", "请放入你的", "your api", "your appid", "your key"]
+
+
+def _is_placeholder(value):
+    """判断 API 值是否为占位文本（需要用户填写）"""
+    if not value or not isinstance(value, str):
+        return True
+    v = value.strip().lower()
+    for p in PLACEHOLDER_PATTERNS:
+        if p in v:
+            return True
+    return False
+
+
+def load_api_values():
+    """从 API.py 读取现有的 API 配置值，返回 dict"""
+    values = {}
+    try:
+        import API
+        # 尝试 reload 获取最新值
+        import importlib
+        importlib.reload(API)
+        for key in ["APPID", "APIKEY", "DEV_PID", "URI", "TAPPID", "TSECRETKEY"]:
+            val = getattr(API, key, "")
+            values[key] = str(val) if val else ""
+    except ImportError:
+        logger.info("未找到 API.py，API 配置为空")
+    except Exception as e:
+        logger.warning(f"读取 API.py 失败: {e}")
+    return values
+
+
+def save_api_values(values):
+    """将 API 配置值写入 API.py 文件"""
+    content = f'''# 百度语音识别（从 https://console.bce.baidu.com/ 获取）
+APPID = "{values.get('APPID', '')}"      # 一串数字
+APIKEY = "{values.get('APIKEY', '')}"    # 字母数字混合
+DEV_PID = {values.get('DEV_PID', '1737')}               # 1737 为英语模型（根据需求修改）
+URI = "{values.get('URI', 'wss://vop.baidu.com/realtime_asr')}"
+
+# 百度翻译 API（从 https://fanyi-api.baidu.com/ 获取）
+TSECRETKEY = "{values.get('TSECRETKEY', '')}"
+TAPPID = "{values.get('TAPPID', '')}"
+'''
+    with open(API_FILE, "w", encoding="utf-8") as f:
+        f.write(content)
+    logger.info(f"API 配置已保存到 {API_FILE}")
+
 
 class AudioSettingsDialog(QDialog):
-    """音频来源设置对话框"""
+    """音频来源 & API 设置对话框"""
 
     # 信号：发射选中的设备信息 dict 或 None（使用默认 Loopback）
     audio_source_changed = pyqtSignal(object)
+    # API 保存后通知主窗口重载
+    api_saved = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("音频来源设置")
-        self.setFixedSize(500, 380)
+        self.setWindowTitle("设置")
+        self.setMinimumSize(520, 600)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
 
         self.pyaudio_instance = None
@@ -29,12 +86,19 @@ class AudioSettingsDialog(QDialog):
 
         self._init_ui()
         self._load_devices()
+        self._load_api_values()
 
     def _init_ui(self):
-        main_layout = QVBoxLayout()
-        main_layout.setSpacing(12)
+        # 外层用滚动区域
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
 
-        # ========== 来源类型选择 ==========
+        content_widget = QWidget()
+        main_layout = QVBoxLayout(content_widget)
+        main_layout.setSpacing(10)
+
+        # ========== 音频来源类型选择 ==========
         source_group = QGroupBox("音频来源")
         source_layout = QVBoxLayout()
 
@@ -77,6 +141,53 @@ class AudioSettingsDialog(QDialog):
         input_layout.addWidget(self.refresh_input_btn)
         input_group.setLayout(input_layout)
 
+        # ========== API 配置 ==========
+        api_group = QGroupBox("百度 API 配置")
+        api_layout = QVBoxLayout()
+
+        # 语音识别 API
+        asr_label = QLabel("语音识别 API")
+        asr_label.setStyleSheet("font-weight: bold; color: #4CAF50; font-size: 13px;")
+
+        asr_form = QFormLayout()
+        asr_form.setSpacing(6)
+
+        self.appid_edit = QLineEdit()
+        self.appid_edit.setPlaceholderText("请输入语音识别 AppID（一串数字）")
+        self.apikey_edit = QLineEdit()
+        self.apikey_edit.setPlaceholderText("请输入语音识别 API Key")
+        self.devpid_edit = QLineEdit()
+        self.devpid_edit.setPlaceholderText("DEV_PID（1737=英语, 1537=普通话）")
+        self.uri_edit = QLineEdit()
+        self.uri_edit.setPlaceholderText("wss://vop.baidu.com/realtime_asr")
+
+        asr_form.addRow("APPID:", self.appid_edit)
+        asr_form.addRow("APIKEY:", self.apikey_edit)
+        asr_form.addRow("DEV_PID:", self.devpid_edit)
+        asr_form.addRow("URI:", self.uri_edit)
+
+        # 翻译 API
+        trans_label = QLabel("翻译 API")
+        trans_label.setStyleSheet("font-weight: bold; color: #2196F3; font-size: 13px;")
+
+        trans_form = QFormLayout()
+        trans_form.setSpacing(6)
+
+        self.tappid_edit = QLineEdit()
+        self.tappid_edit.setPlaceholderText("请输入翻译 AppID（一串数字）")
+        self.tsecretkey_edit = QLineEdit()
+        self.tsecretkey_edit.setPlaceholderText("请输入翻译密钥")
+
+        trans_form.addRow("TAPPID:", self.tappid_edit)
+        trans_form.addRow("TSECRETKEY:", self.tsecretkey_edit)
+
+        api_layout.addWidget(asr_label)
+        api_layout.addLayout(asr_form)
+        api_layout.addSpacing(8)
+        api_layout.addWidget(trans_label)
+        api_layout.addLayout(trans_form)
+        api_group.setLayout(api_layout)
+
         # ========== 状态提示 ==========
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: #888; font-size: 12px;")
@@ -113,11 +224,18 @@ class AudioSettingsDialog(QDialog):
         main_layout.addWidget(source_group)
         main_layout.addWidget(loopback_group)
         main_layout.addWidget(input_group)
+        main_layout.addWidget(api_group)
         main_layout.addWidget(self.status_label)
         main_layout.addStretch()
         main_layout.addLayout(btn_layout)
 
-        self.setLayout(main_layout)
+        scroll.setWidget(content_widget)
+
+        # 顶层布局
+        top_layout = QVBoxLayout()
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.addWidget(scroll)
+        self.setLayout(top_layout)
 
         # 信号连接
         self.radio_loopback.toggled.connect(self._on_source_toggled)
@@ -126,6 +244,25 @@ class AudioSettingsDialog(QDialog):
         is_loopback = self.radio_loopback.isChecked()
         self.loopback_combo.setEnabled(is_loopback)
         self.input_combo.setEnabled(not is_loopback)
+
+    def _load_api_values(self):
+        """从 API.py 加载现有值到输入框，如果是占位文本则清空"""
+        values = load_api_values()
+        for key, edit, default in [
+            ("APPID", self.appid_edit, ""),
+            ("APIKEY", self.apikey_edit, ""),
+            ("DEV_PID", self.devpid_edit, "1737"),
+            ("URI", self.uri_edit, "wss://vop.baidu.com/realtime_asr"),
+            ("TAPPID", self.tappid_edit, ""),
+            ("TSECRETKEY", self.tsecretkey_edit, ""),
+        ]:
+            val = values.get(key, "")
+            if val and not _is_placeholder(val):
+                edit.setText(val)
+            elif default:
+                edit.setText(default)
+            else:
+                edit.clear()
 
     @staticmethod
     def _is_loopback_device(dev_info):
@@ -208,9 +345,9 @@ class AudioSettingsDialog(QDialog):
             QMessageBox.warning(self, "错误", f"加载音频设备失败:\n{e}")
 
     def _apply_settings(self):
-        """应用设置"""
+        """应用设置（音频来源 + API 配置）"""
+        # ---- 音频来源 ----
         if self.radio_loopback.isChecked():
-            # Loopback 模式
             idx = self.loopback_combo.currentData()
             if idx is None or idx == -1:
                 QMessageBox.warning(self, "提示", "未检测到可用的 Loopback 设备。")
@@ -220,7 +357,6 @@ class AudioSettingsDialog(QDialog):
                 "device_index": idx
             }
         else:
-            # 麦克风模式
             idx = self.input_combo.currentData()
             if idx is None or idx == -1:
                 QMessageBox.warning(self, "提示", "未检测到可用的麦克风设备。")
@@ -230,8 +366,48 @@ class AudioSettingsDialog(QDialog):
                 "device_index": idx
             }
 
+        # ---- API 配置验证与保存 ----
+        api_values = {
+            "APPID": self.appid_edit.text().strip(),
+            "APIKEY": self.apikey_edit.text().strip(),
+            "DEV_PID": self.devpid_edit.text().strip(),
+            "URI": self.uri_edit.text().strip(),
+            "TAPPID": self.tappid_edit.text().strip(),
+            "TSECRETKEY": self.tsecretkey_edit.text().strip(),
+        }
+
+        # 检查是否有占位文本或空值
+        missing = []
+        for key, val in api_values.items():
+            if not val or _is_placeholder(val):
+                missing.append(key)
+        if missing:
+            result = QMessageBox.question(
+                self,
+                "API 配置不完整",
+                f"以下 API 字段为空或无效:\n{', '.join(missing)}\n\n是否仍要保存？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if result == QMessageBox.No:
+                return
+
+        # 保存 API.py
+        try:
+            save_api_values(api_values)
+            # 热重载 API 模块
+            import API
+            import importlib
+            importlib.reload(API)
+            logger.info("API 模块已热重载")
+            self.api_saved.emit()
+        except Exception as e:
+            logger.error(f"保存 API 配置失败: {e}")
+            QMessageBox.warning(self, "错误", f"保存 API 配置失败:\n{e}")
+            return
+
         self.audio_source_changed.emit(self.current_selection)
-        self.status_label.setText("✅ 设置已应用")
+        self.status_label.setText("✅ 设置已应用（含 API 配置）")
         self.accept()
 
     def get_selection(self):

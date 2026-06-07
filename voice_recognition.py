@@ -41,9 +41,16 @@ class SpeechRecognitionThread(QThread):
         self._audio_source_lock = threading.Lock()
         self._reconnect_event = threading.Event()  # 触发重连信号
         self._force_stop_audio = threading.Event()  # 强制终止音频采集线程
+        self._paused = True  # 初始为暂停状态，等用户手动开始
 
     def run(self):
         while self._is_running:
+            # 暂停状态下等待恢复信号
+            while self._is_running and self._paused:
+                time.sleep(0.5)
+            if not self._is_running:
+                break
+
             uri = f"{API.URI}?sn={uuid.uuid1()}"
             logger.info(f"连接地址: {uri}")
 
@@ -66,10 +73,39 @@ class SpeechRecognitionThread(QThread):
     def stop(self):
         self._is_running = False
         self._reconnect_event.set()  # 唤醒可能等待的线程
+        self._force_stop_audio.set()  # 强制终止音频线程
         if self.ws_app and self.ws_app.sock:
             self.ws_app.close()
         self.quit()
         self.wait()
+
+    def pause(self):
+        """暂停识别（断开 WebSocket，停止音频采集）"""
+        if self._paused:
+            return
+        self._paused = True
+        logger.info("⏸️ 暂停识别")
+        self._force_stop_audio.set()
+        if self.audio_thread and self.audio_thread.is_alive():
+            self.audio_thread.join(timeout=2)
+        if self.ws_app and self.ws_app.sock:
+            self.ws_app.close()
+
+    def resume(self):
+        """恢复识别（触发重新连接）"""
+        if not self._paused:
+            return
+        self._paused = False
+        logger.info("▶️ 恢复识别")
+        self._force_stop_audio.clear()
+        # 关闭当前 ws 触发 run() 重连
+        if self.ws_app and self.ws_app.sock:
+            self.ws_app.close()
+            self._reconnect_event.set()
+
+    def is_paused(self):
+        """返回当前是否暂停"""
+        return self._paused
 
     def switch_audio_source(self, selection):
         """切换音频来源设备
