@@ -90,6 +90,10 @@ python app.py
 | websocket-client | WebSocket 通信 |
 | audioop / struct | 音频格式转换（重采样、声道合并） |
 
+## 🛠️ 流程图
+<img width="666" height="407" alt="屏幕截图 2026-06-07 193439" src="https://github.com/user-attachments/assets/e542bad2-b165-43e3-97a8-e45c772e499b" />
+
+
 ## 📖 使用说明
 
 1. 运行 `python app.py` 后，桌面会出现一个半透明的悬浮窗口。
